@@ -1,110 +1,107 @@
 package main
 
 import (
-    "bufio"
-    "fmt"
-    "os"
-    "strconv"
-    "strings"
-   )
+	"fmt"
+	"sync"
+	"time"
+)
+// Message represents a message to be published.
+type Message struct {
+	Topic   string
+	Content interface{}
+}
 
-   type Task struct {
-    Text      string
-    Completed bool
+// Subscriber represents a subscriber to a topic.
+type Subscriber struct {
+	Channel     chan Message
+	Unsubscribe chan bool
+}
+
+// Broker manages subscribers and publishes messages.
+type Broker struct {
+	subscribers map[string][]*Subscriber
+	mu          sync.RWMutex
+}
+
+func NewBroker() *Broker {
+	return &Broker{
+		subscribers: make(map[string][]*Subscriber),
+	}
+}
+
+func (b *Broker) Subscribe(topic string) *Subscriber {
+    b.mu.Lock()
+	subscriber := &Subscriber{
+		Channel:     make(chan Message),
+		Unsubscribe: make(chan bool),
+	}
+
+	
+	b.subscribers[topic] = append(b.subscribers[topic], subscriber)
+	defer b.mu.Unlock()
+
+	return subscriber
+}
+
+
+func (b *Broker) Unsubscribe(topic string, subscriber *Subscriber) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if subscribers, found := b.subscribers[topic]; found {
+	for i, sub := range subscribers {
+		if sub == subscriber {
+			b.subscribers[topic] = append(subscribers[:i], subscribers[i+1:]...)
+			close(subscriber.Channel)      // Close the channel to signal completion
+			close(subscriber.Unsubscribe)   // Close the unsubscribe channel
+			return
+		}
+	}
    }
+}
 
-func showMenu(){
- fmt.Println("\nMenu:")
- fmt.Println("1. Show Tasks")
- fmt.Println("2. Add Task")
- fmt.Println("3. Mark Task as Completed")
- fmt.Println("4. Save Tasks to File")
- fmt.Println("5. Exit")
-} 
+func (b *Broker) Publish(topic string, content interface{}) {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
 
-func showTasks(tasks []Task){
-    if len(tasks) == 0 {
-        fmt.Println("No task available");
-        return;
+	if subscribers, found := b.subscribers[topic]; found {
+        
+		for _, subscriber := range subscribers {
+			subscriber.Channel <- Message{Topic: topic, Content: content}
+		}
+	} else {
+        fmt.Println("No subscriber found for topic");
     }
-
-   for i,s := range tasks {
-       status:= "not comopleted"
-       if s.Completed == true {
-         status = "completed"
-       }
-       fmt.Printf("Task is number %d => %s  and status [%s] \n",i+1,s.Text,status)
-   }
-
-}
-
-func getUserInput(prompt string) string {
-  reader :=  bufio.NewReader(os.Stdin);
-   fmt.Printf(prompt)
-  input, _ := reader.ReadString('\n')
-   return strings.TrimSpace(input)
-
-}
-
-func addTask(tasks *[]Task){
-    text := getUserInput("Enter task description:")
-    *tasks = append(*tasks, Task{Text: text})
-   fmt.Println("Task added");
-}
-
-func markTaskCompleted(tasks *[]Task){
-    showTasks(*tasks);
-    num:= getUserInput("Mark task as completed by entering number:")
-    taskIndex,err := strconv.Atoi(num)
-    if err != nil || taskIndex < 1 || taskIndex > len(*tasks) {
-   fmt.Println("Invalid task number. Please try again.")
-   return
-    }
-
-    (*tasks)[taskIndex-1].Completed = true
-    fmt.Println("Task marked completed") 
-
-}
-
-func saveTasksToFile(tasks []Task){
-    file, err := os.Create("tasks.txt")
-    if err != nil {
-        fmt.Println("Error creating file:", err)
-        return
-       }
-       defer file.Close()
-       for _, task := range tasks {
-        status := "not completed"
-        if task.Completed {
-         status = "completed"
-        }
-        file.WriteString(fmt.Sprintf("[%s] %s\n", status, task.Text))
-       }
-       fmt.Println("Tasks saved to file 'tasks.txt'.")
 }
 
 
 func main() {
- tasks := []Task{}
+	broker := NewBroker()
 
- for {
-  showMenu()
-  option := getUserInput("Enter your choice number: ")
+	subscriber := broker.Subscribe("topic_1")
+	go func() {
+		for {
+			select {
+			case msg, ok := <-subscriber.Channel:
+				if !ok {
+					fmt.Println("Subscriber channel closed.")
+					return
+				}
+				fmt.Printf("Received: %v\n", msg.Content)
+			case <-subscriber.Unsubscribe:
+				fmt.Println("Unsubscribed.")
+				return
+			}
+		}
+	}()
 
-  switch option {
-   case "1":
-    showTasks(tasks)
-   case "2":
-    addTask(&tasks)
-   case "3":
-    markTaskCompleted(&tasks)
-   case "4":
-    saveTasksToFile(tasks)
-   case "5":
-    fmt.Println("Exiting the ToDo application.")
-    return
-   default:
-    fmt.Println("Invalid choice. Please try again.")
-  }
- }
+	broker.Publish("topic_1", "my name is!")
+	broker.Publish("topic_1", "This is a test message.")
+
+	time.Sleep(2 * time.Second)
+	broker.Unsubscribe("topic_1", subscriber)
+    
+	broker.Publish("topic_1", "This message won't be received.")
+
+	time.Sleep(time.Second)
 }
